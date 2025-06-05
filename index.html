@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geohash Map Visualization</title>
+    <script src='https://api.mapbox.com/mapbox-gl-js/v2.9.1/mapbox-gl.js'></script>
+    <link href='https://api.mapbox.com/mapbox-gl-js/v2.9.1/mapbox-gl.css' rel='stylesheet' />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        #map {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+        }
+
+        .control-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            z-index: 1;
+            max-width: 300px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 100px;
+            margin-bottom: 10px;
+        }
+
+        .error-message {
+            color: red;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+
+        .info {
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        .geohash-label {
+            background: transparent;
+            border: 2px solid #FFD700;
+            border-radius: 3px;
+            padding: 2px 5px;
+            font-weight: bold;
+            white-space: nowrap;
+            color: #FFD700;
+            text-shadow:
+                -1px -1px 0 rgba(0, 0, 0, 0.7),
+                1px -1px 0 rgba(0, 0, 0, 0.7),
+                -1px 1px 0 rgba(0, 0, 0, 0.7),
+                1px 1px 0 rgba(0, 0, 0, 0.7);
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+    <div class="control-panel">
+        <h3>Enter Geohash List</h3>
+        <div class="info">
+            Valid geohash examples:<br>
+            wtw3sm2q<br>
+            wtw3sm2n<br>
+            wtw3sm2p
+        </div>
+        <p>Enter one geohash per line:</p>
+        <textarea id="geohashInput" placeholder="wtw3sm2q"></textarea>
+        <br>
+        <button onclick="visualizeGeohashes()">Show on Map</button>
+        <div id="errorMessage" class="error-message"></div>
+    </div>
+
+    <script>
+        // Geohash implementation
+        const BASE32_CODES = "0123456789bcdefghjkmnpqrstuvwxyz";
+        const BASE32_CODES_DICT = {};
+        for (let i = 0; i < BASE32_CODES.length; i++) {
+            BASE32_CODES_DICT[BASE32_CODES.charAt(i)] = i;
+        }
+
+        // Mapbox initialization
+        mapboxgl.accessToken = '{MAPBOX_ACCESS_TOKEN}'; // Replace with your Mapbox access token
+
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/streets-v11',
+            center: [116.3, 39.9], // Beijing center
+            zoom: 10
+        });
+
+        // Wait for map style to load before adding layers
+        map.on('load', () => {
+            // Add a source for the rectangles
+            map.addSource('rectangles', {
+                type: 'geojson',
+                data: {
+                    type: 'FeatureCollection',
+                    features: []
+                }
+            });
+
+            // Add a layer for the rectangle fills
+            map.addLayer({
+                id: 'rectangle-fills',
+                type: 'fill',
+                source: 'rectangles',
+                paint: {
+                    'fill-color': '#3388ff',
+                    'fill-opacity': 0.2
+                }
+            });
+
+            // Add a layer for the rectangle borders
+            map.addLayer({
+                id: 'rectangle-borders',
+                type: 'line',
+                source: 'rectangles',
+                paint: {
+                    'line-color': '#3388ff',
+                    'line-width': 2
+                }
+            });
+        });
+
+        const BITS = [16, 8, 4, 2, 1];
+
+        function decodeGeohash(geohash) {
+            let isEven = true;
+            const lat = [];
+            const lon = [];
+            lat[0] = -90.0;
+            lat[1] = 90.0;
+            lon[0] = -180.0;
+            lon[1] = 180.0;
+            let latErr = 90.0;
+            let lonErr = 180.0;
+
+            for (let i = 0; i < geohash.length; i++) {
+                const chr = geohash.charAt(i);
+                const idx = BASE32_CODES_DICT[chr];
+                if (idx === undefined) {
+                    throw new Error("Invalid geohash character: " + chr);
+                }
+
+                for (let j = 0; j < 5; j++) {
+                    const mask = BITS[j];
+                    if (isEven) {
+                        lonErr = lonErr / 2;
+                        if ((idx & mask) !== 0) {
+                            lon[0] = (lon[0] + lon[1]) / 2;
+                        } else {
+                            lon[1] = (lon[0] + lon[1]) / 2;
+                        }
+                    } else {
+                        latErr = latErr / 2;
+                        if ((idx & mask) !== 0) {
+                            lat[0] = (lat[0] + lat[1]) / 2;
+                        } else {
+                            lat[1] = (lat[0] + lat[1]) / 2;
+                        }
+                    }
+                    isEven = !isEven;
+                }
+            }
+
+            return {
+                latitude: (lat[0] + lat[1]) / 2,
+                longitude: (lon[0] + lon[1]) / 2,
+                error: { latitude: latErr, longitude: lonErr },
+                bounds: {
+                    sw: [lon[0], lat[0]],
+                    ne: [lon[1], lat[1]]
+                }
+            };
+        }
+
+        function isValidGeohash(geohash) {
+            // Geohash should only contain these characters
+            const validChars = /^[0-9a-z]+$/;
+            // Typical geohash length is between 1 and 12 characters
+            return validChars.test(geohash) && geohash.length >= 1 && geohash.length <= 12;
+        }
+
+        function createRectangleFeature(bounds, geohash) {
+            return {
+                type: 'Feature',
+                properties: {
+                    geohash: geohash
+                },
+                geometry: {
+                    type: 'Polygon',
+                    coordinates: [[
+                        bounds.sw,
+                        [bounds.ne[0], bounds.sw[1]],
+                        bounds.ne,
+                        [bounds.sw[0], bounds.ne[1]],
+                        bounds.sw
+                    ]]
+                }
+            };
+        }
+
+        function visualizeGeohashes() {
+            const errorMessageDiv = document.getElementById('errorMessage');
+            errorMessageDiv.innerHTML = '';
+
+            // Remove existing markers
+            const existingMarkers = document.querySelectorAll('.mapboxgl-marker');
+            existingMarkers.forEach(marker => marker.remove());
+
+            // Get geohash input
+            const geohashInput = document.getElementById('geohashInput').value;
+            const geohashes = geohashInput.split('\n').filter(hash => hash.trim() !== '');
+
+            if (geohashes.length === 0) {
+                errorMessageDiv.innerHTML = 'Please enter at least one geohash';
+                return;
+            }
+
+            const bounds = new mapboxgl.LngLatBounds();
+            let hasValidGeohash = false;
+            const features = [];
+
+            geohashes.forEach(geohash => {
+                geohash = geohash.trim();
+                if (!isValidGeohash(geohash)) {
+                    errorMessageDiv.innerHTML += `Invalid geohash format: ${geohash}<br>`;
+                    return;
+                }
+
+                try {
+                    const decoded = decodeGeohash(geohash);
+                    const lat = decoded.latitude;
+                    const lon = decoded.longitude;
+
+                    if (!decoded || isNaN(lat) || isNaN(lon)) {
+                        errorMessageDiv.innerHTML += `Could not decode geohash: ${geohash}<br>`;
+                        return;
+                    }
+
+                    // Add rectangle feature
+                    features.push(createRectangleFeature(decoded.bounds, geohash));
+
+                    // Create label
+                    const label = document.createElement('div');
+                    label.className = 'geohash-label';
+                    label.textContent = geohash;
+
+                    new mapboxgl.Marker({
+                        element: label,
+                        anchor: 'center'
+                    })
+                        .setLngLat([lon, lat])
+                        .addTo(map);
+
+                    // Extend bounds to include this geohash
+                    bounds.extend(decoded.bounds.sw);
+                    bounds.extend(decoded.bounds.ne);
+                    hasValidGeohash = true;
+                } catch (e) {
+                    errorMessageDiv.innerHTML += `Error processing geohash ${geohash}: ${e.message}<br>`;
+                }
+            });
+
+            // Update the rectangles source with new features
+            if (map.getSource('rectangles')) {
+                map.getSource('rectangles').setData({
+                    type: 'FeatureCollection',
+                    features: features
+                });
+            }
+
+            // Fit map to show all geohashes
+            if (hasValidGeohash && !bounds.isEmpty()) {
+                map.fitBounds(bounds, {
+                    padding: 50
+                });
+            }
+        }
+    </script>
+</body>
+
+</html>
